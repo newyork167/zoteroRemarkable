@@ -2,6 +2,10 @@ from pyzotero import zotero as pyzotero
 from pydash import _
 import os
 import subprocess
+import zipfile
+import io
+import requests
+from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -16,7 +20,11 @@ API_KEY = os.getenv('API_KEY')
 LIBRARY_ID = os.getenv('LIBRARY_ID')
 COLLECTION_NAME = os.getenv('COLLECTION_NAME') #in Zotero
 FOLDER_NAME = os.getenv('FOLDER_NAME') #on the Remarkable device, this must exist!
-STORAGE_BASE_PATH = os.getenv('STORAGE_BASE_PATH') #on local computer
+STORAGE_BASE_PATH = os.getenv('STORAGE_BASE_PATH') #on local computer, used to store files downloaded from WebDAV
+
+WEBDAV_URL = os.getenv('WEBDAV_URL') #e.g. https://example.com/remote.php/dav/files/user/zotero
+WEBDAV_USERNAME = os.getenv('WEBDAV_USERNAME')
+WEBDAV_PASSWORD = os.getenv('WEBDAV_PASSWORD')
 
 RMAPI_LS = f"rmapi ls /{FOLDER_NAME}"
 
@@ -28,16 +36,46 @@ def getCollectionId(zotero, collection_name):
         if (collection.get('data').get('name') == collection_name):
             return collection.get('data').get('key')
 
-def getPapersTitleAndPathsFromZoteroCollection(zotero, collection_id, STORAGE_BASE_PATH):
+def getPapersFromZoteroCollection(zotero, collection_id):
     papers = []
     collection_items = zotero.collection_items(collection_id);
     for item in collection_items:
-        if(item.get('data').get('contentType') == 'application/pdf') and item.get('data').get('linkMode') == 'linked_file':
-            item_pdf_path = STORAGE_BASE_PATH + item.get('data').get('path')[12:]
-            item_title = item.get('data').get('title')[:-4]
-            if (item_pdf_path and item_title):
-                papers.append({ 'title': item_title, 'path': item_pdf_path })
+        data = item.get('data')
+        if (data.get('contentType') == 'application/pdf') and data.get('linkMode') in ('imported_file', 'imported_url'):
+            item_key = data.get('key')
+            item_filename = data.get('filename')
+            item_title = data.get('title')[:-4] if data.get('title', '').lower().endswith('.pdf') else data.get('title')
+            if (item_key and item_filename and item_title):
+                papers.append({ 'title': item_title, 'key': item_key, 'filename': item_filename })
     return papers
+
+def downloadPaperFromWebDAV(paper, download_dir):
+    key = paper.get('key')
+    filename = paper.get('filename')
+    title = paper.get('title')
+    zip_url = f"{WEBDAV_URL.rstrip('/')}/{key}.zip"
+    response = requests.get(zip_url, auth=HTTPBasicAuth(WEBDAV_USERNAME, WEBDAV_PASSWORD))
+    response.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+        member = filename if filename in z.namelist() else next(
+            (name for name in z.namelist() if name.lower().endswith('.pdf')), None
+        )
+        if not member:
+            raise FileNotFoundError(f"No PDF found in WebDAV archive for {key}")
+        pdf_bytes = z.read(member)
+    dest_path = os.path.join(download_dir, f"{title}.pdf")
+    with open(dest_path, 'wb') as f:
+        f.write(pdf_bytes)
+    return dest_path
+
+def downloadPapers(papers, download_dir):
+    print(f'downloading {len(papers)} papers from WebDAV')
+    for paper in papers:
+        try:
+            paper['path'] = downloadPaperFromWebDAV(paper, download_dir)
+            print(f"downloaded {paper.get('title')}")
+        except Exception as e:
+            print(f"Failed to download {paper.get('title')} from WebDAV: {e}")
 
 def getPapersFromRemarkable(RMAPI_LS):
     remarkable_files = []
@@ -64,6 +102,9 @@ def uploadPapers(papers):
             os.system(COMMAND)
         except:
             print(f'Failed to upload {path}')
+        finally:
+            if path and os.path.exists(path):
+                os.remove(path)
 
 def getDeleteListOfPapers(remarkable_files, papers):
     delete_list = []
@@ -87,7 +128,7 @@ print('------- sync started -------')
 collection_id = getCollectionId(zotero, COLLECTION_NAME)
 
 # get papers that we want from Zetero Remarkable collection
-papers = getPapersTitleAndPathsFromZoteroCollection(zotero, collection_id, STORAGE_BASE_PATH)
+papers = getPapersFromZoteroCollection(zotero, collection_id)
 print(f"{len(papers)} papers in Zotero {COLLECTION_NAME} collection name")
 for paper in papers:
     print(paper.get('title'))
@@ -97,6 +138,9 @@ remarkable_files = getPapersFromRemarkable(RMAPI_LS)
 print(f"{len(remarkable_files)} papers on Remarkable Device, /{FOLDER_NAME}")
 
 upload_list = getUploadListOfPapers(remarkable_files, papers)
+os.makedirs(STORAGE_BASE_PATH, exist_ok=True)
+downloadPapers(upload_list, STORAGE_BASE_PATH)
+upload_list = [p for p in upload_list if p.get('path')]
 uploadPapers(upload_list)
 
 delete_list = getDeleteListOfPapers(remarkable_files, papers)

@@ -1,7 +1,8 @@
 # Zotero Remarkable Sync
 
 This is a little utility that I made to keep a collection/folder in sync with Zotero and Remarkable.
-My zotero setup uses external storage (I store all attachments on OneDrive)
+My zotero setup uses WebDAV storage for attachments (e.g. self-hosted or Nextcloud/ownCloud WebDAV).
+Collection and item metadata is fetched via the Zotero web API, but the actual PDF files are downloaded from your WebDAV storage server.
 
 ## Setup
  - install rmapi
@@ -14,13 +15,15 @@ My zotero setup uses external storage (I store all attachments on OneDrive)
 - pyzotero
 - pydash
 - dotenv
-(the above 3 python libraries can be installed using pip3)
+- requests
+(the above python libraries can be installed using pip3)
 
 ### Env file
 - Create a zotero api key
 - get zotero library_id (from zotero web)
 - create a folder on remarkable and a collection in zotero
-- get base path for zotero pdf (papers)
+- set `STORAGE_BASE_PATH` to a local temp folder used to hold PDFs downloaded from WebDAV before uploading to Remarkable
+- set `WEBDAV_URL`, `WEBDAV_USERNAME`, and `WEBDAV_PASSWORD` to match your Zotero WebDAV storage settings (found in Zotero preferences under Sync > File Syncing)
 
 ### Usage
 _(ensure you have a .env file, with zotero api key, and rmapi setup)_  
