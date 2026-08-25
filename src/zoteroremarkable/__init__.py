@@ -21,21 +21,29 @@ def getCollectionId(zotero, collection_name):
 def getPapersFromZoteroCollection(zotero, collection_id):
     papers = []
     collection_items = zotero.collection_items(collection_id);
+    titles_by_key = { item.get('data').get('key'): item.get('data').get('title') for item in collection_items }
     for item in collection_items:
         data = item.get('data')
         if (data.get('contentType') == 'application/pdf') and data.get('linkMode') in ('imported_file', 'imported_url'):
             item_key = data.get('key')
             item_filename = data.get('filename')
-            item_title = data.get('title')[:-4] if data.get('title', '').lower().endswith('.pdf') else data.get('title')
+            # attachment titles are often just "PDF"; prefer the parent (actual paper) title when available
+            parent_key = data.get('parentItem')
+            raw_title = titles_by_key.get(parent_key) or data.get('title')
+            item_title = raw_title[:-4] if raw_title and raw_title.lower().endswith('.pdf') else raw_title
             if (item_key and item_filename and item_title):
                 papers.append({ 'title': item_title, 'key': item_key, 'filename': item_filename })
     return papers
+
+# Zotero's WebDAV file sync always stores attachments under a 'zotero' subfolder of the configured WebDAV URL
+def getWebdavStorageUrl(webdav_url):
+    return f"{webdav_url.rstrip('/')}/zotero"
 
 def downloadPaperFromWebDAV(paper, download_dir, webdav_url, webdav_username, webdav_password):
     key = paper.get('key')
     filename = paper.get('filename')
     title = paper.get('title')
-    zip_url = f"{webdav_url.rstrip('/')}/{key}.zip"
+    zip_url = f"{getWebdavStorageUrl(webdav_url)}/{key}.zip"
     response = requests.get(zip_url, auth=HTTPBasicAuth(webdav_username, webdav_password))
     response.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(response.content)) as z:
@@ -68,8 +76,9 @@ def uploadPaperToWebDAV(zotero, item_key, filename, local_path, webdav_url, webd
     with zipfile.ZipFile(zip_buffer, 'w') as z:
         z.writestr(filename, file_bytes)
     auth = HTTPBasicAuth(webdav_username, webdav_password)
-    zip_url = f"{webdav_url.rstrip('/')}/{item_key}.zip"
-    prop_url = f"{webdav_url.rstrip('/')}/{item_key}.prop"
+    storage_url = getWebdavStorageUrl(webdav_url)
+    zip_url = f"{storage_url}/{item_key}.zip"
+    prop_url = f"{storage_url}/{item_key}.prop"
     prop_xml = f'<properties version="1"><mtime>{mtime_ms}</mtime><hash>{md5_hash}</hash></properties>'
     requests.put(zip_url, data=zip_buffer.getvalue(), auth=auth).raise_for_status()
     requests.put(prop_url, data=prop_xml, auth=auth).raise_for_status()
@@ -193,6 +202,9 @@ def main() -> None:
     webdav_url = os.getenv('WEBDAV_URL') #e.g. https://example.com/remote.php/dav/files/user/zotero
     webdav_username = os.getenv('WEBDAV_USERNAME')
     webdav_password = os.getenv('WEBDAV_PASSWORD')
+
+    if webdav_url and not (webdav_url.startswith('http://') or webdav_url.startswith('https://')):
+        raise ValueError(f"WEBDAV_URL must include a scheme (http:// or https://), got: {webdav_url}")
 
     rmapi_host = os.getenv('RMAPI_HOST') #e.g. https://remarkable.example.com, for a self-hosted rmfakecloud instance
     if rmapi_host:
