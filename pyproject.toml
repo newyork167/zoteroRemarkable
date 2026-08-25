@@ -1,0 +1,22 @@
+[project]
+name = "zoteroremarkable"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "newyork167", email = "newyork167@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pyzotero>=1.5.0",
+    "pydash>=8.0.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+zoteroremarkable = "zoteroremarkable:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"

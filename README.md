@@ -13,17 +13,18 @@ A small state file (`.rm_sync_state.json`, stored in `STORAGE_BASE_PATH`) is use
 
 ## Setup
  - install rmapi (a version with the `geta` "get annotated PDF" command)
- - Download the [sync.py](https://raw.githubusercontent.com/oscarmorrison/zoteroRemarkableO/master/sync.py)
+ - install [uv](https://docs.astral.sh/uv/)
+ - clone this repository
  - create a `.env` file
 
 ### Dependancies
 - python3
 - [rmapi](https://github.com/juruen/rmapi)
+- [uv](https://docs.astral.sh/uv/) (manages the Python dependencies below)
 - pyzotero
 - pydash
-- dotenv
+- python-dotenv
 - requests
-(the above python libraries can be installed using pip3)
 
 ### Env file
 - Create a zotero api key
@@ -36,4 +37,4 @@ A small state file (`.rm_sync_state.json`, stored in `STORAGE_BASE_PATH`) is use
 ### Usage
 _(ensure you have a .env file, with zotero api key, and rmapi setup)_  
 Then to sync, just run:  
-  `python3 sync.py`
+  `uv run zoteroremarkable`
