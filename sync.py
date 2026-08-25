@@ -4,6 +4,8 @@ import os
 import subprocess
 import zipfile
 import io
+import json
+import hashlib
 import requests
 from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
@@ -26,7 +28,14 @@ WEBDAV_URL = os.getenv('WEBDAV_URL') #e.g. https://example.com/remote.php/dav/fi
 WEBDAV_USERNAME = os.getenv('WEBDAV_USERNAME')
 WEBDAV_PASSWORD = os.getenv('WEBDAV_PASSWORD')
 
+RMAPI_HOST = os.getenv('RMAPI_HOST') #e.g. https://remarkable.example.com, for a self-hosted rmfakecloud instance
+if RMAPI_HOST:
+    os.environ['RMAPI_HOST'] = RMAPI_HOST
+
 RMAPI_LS = f"rmapi ls /{FOLDER_NAME}"
+
+# tracks the last known state of each file on the Remarkable, so we can detect local edits/annotations
+SYNC_STATE_PATH = os.path.join(STORAGE_BASE_PATH, '.rm_sync_state.json')
 
 zotero = pyzotero.Zotero(LIBRARY_ID, LIBRARY_TYPE, API_KEY)
 
@@ -76,6 +85,80 @@ def downloadPapers(papers, download_dir):
             print(f"downloaded {paper.get('title')}")
         except Exception as e:
             print(f"Failed to download {paper.get('title')} from WebDAV: {e}")
+
+def uploadPaperToWebDAV(zotero, item_key, filename, local_path):
+    with open(local_path, 'rb') as f:
+        file_bytes = f.read()
+    mtime_ms = int(os.path.getmtime(local_path) * 1000)
+    md5_hash = hashlib.md5(file_bytes).hexdigest()
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as z:
+        z.writestr(filename, file_bytes)
+    auth = HTTPBasicAuth(WEBDAV_USERNAME, WEBDAV_PASSWORD)
+    zip_url = f"{WEBDAV_URL.rstrip('/')}/{item_key}.zip"
+    prop_url = f"{WEBDAV_URL.rstrip('/')}/{item_key}.prop"
+    prop_xml = f'<properties version="1"><mtime>{mtime_ms}</mtime><hash>{md5_hash}</hash></properties>'
+    requests.put(zip_url, data=zip_buffer.getvalue(), auth=auth).raise_for_status()
+    requests.put(prop_url, data=prop_xml, auth=auth).raise_for_status()
+    # tell Zotero the attachment file changed, otherwise it will keep serving the stale version
+    item = zotero.item(item_key)
+    item['data']['mtime'] = mtime_ms
+    item['data']['md5'] = md5_hash
+    zotero.update_item(item)
+
+def loadSyncState(path):
+    if os.path.exists(path):
+        with open(path, 'r') as f:
+            return json.load(f)
+    return {}
+
+def saveSyncState(path, state):
+    with open(path, 'w') as f:
+        json.dump(state, f)
+
+def getRemarkableFileFingerprint(title):
+    COMMAND = f"rmapi stat \"/{FOLDER_NAME}/{title}\""
+    try:
+        output = subprocess.check_output(COMMAND, shell=True).decode('utf-8')
+        stat = json.loads(output)
+        return f"{stat.get('ModifiedClient')}:{stat.get('Version')}"
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return None
+
+def getPapersChangedOnRemarkable(papers, remarkable_files, state):
+    changed = []
+    for paper in papers:
+        title = paper.get('title')
+        if title not in remarkable_files:
+            continue
+        fingerprint = getRemarkableFileFingerprint(title)
+        if fingerprint is None:
+            continue
+        # no prior state means this is the first time we've seen the file; assume it's already in sync
+        if title in state and state[title] != fingerprint:
+            paper['fingerprint'] = fingerprint
+            changed.append(paper)
+        else:
+            state[title] = fingerprint
+    return changed
+
+def syncChangedPapersToZotero(zotero, papers, download_dir, state):
+    print(f'syncing {len(papers)} papers changed on Remarkable back to Zotero')
+    for paper in papers:
+        title = paper.get('title')
+        dest_path = os.path.join(download_dir, f"{title}.pdf")
+        COMMAND = f"rmapi geta \"/{FOLDER_NAME}/{title}\" -o \"{download_dir}\""
+        try:
+            print(COMMAND)
+            subprocess.check_call(COMMAND, shell=True)
+            uploadPaperToWebDAV(zotero, paper.get('key'), paper.get('filename'), dest_path)
+            state[title] = paper.get('fingerprint')
+            print(f'uploaded changes to {title} back to Zotero')
+        except Exception as e:
+            print(f'Failed to sync {title} back to Zotero: {e}')
+        finally:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
 
 def getPapersFromRemarkable(RMAPI_LS):
     remarkable_files = []
@@ -137,13 +220,29 @@ for paper in papers:
 remarkable_files = getPapersFromRemarkable(RMAPI_LS)
 print(f"{len(remarkable_files)} papers on Remarkable Device, /{FOLDER_NAME}")
 
-upload_list = getUploadListOfPapers(remarkable_files, papers)
 os.makedirs(STORAGE_BASE_PATH, exist_ok=True)
+sync_state = loadSyncState(SYNC_STATE_PATH)
+
+# Remarkable is the source of truth for content changes: push any edited/annotated files back to Zotero first
+changed_papers = getPapersChangedOnRemarkable(papers, remarkable_files, sync_state)
+syncChangedPapersToZotero(zotero, changed_papers, STORAGE_BASE_PATH, sync_state)
+
+# then bring anything new from Zotero down to the Remarkable
+upload_list = getUploadListOfPapers(remarkable_files, papers)
 downloadPapers(upload_list, STORAGE_BASE_PATH)
+for paper in upload_list:
+    if paper.get('path'):
+        sync_state[paper.get('title')] = None
 upload_list = [p for p in upload_list if p.get('path')]
 uploadPapers(upload_list)
+for paper in upload_list:
+    sync_state[paper.get('title')] = getRemarkableFileFingerprint(paper.get('title'))
 
 delete_list = getDeleteListOfPapers(remarkable_files, papers)
 deletePapers(delete_list)
+for title in delete_list:
+    sync_state.pop(title, None)
+
+saveSyncState(SYNC_STATE_PATH, sync_state)
 
 print('------- sync complete -------')
