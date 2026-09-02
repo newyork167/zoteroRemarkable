@@ -1,0 +1,18 @@
+# Maps Zotero collections (supports nested subcollections, separated by "/") to
+# folders on the Remarkable, nested under FOLDER_NAME from your .env.
+# `folder` is optional; it defaults to the same path as `collection`.
+#
+# Copy this file to sync_map.yaml and edit it to match your library.
+
+# Top-level collection -> /<FOLDER_NAME>/Mathematics
+- collection: Medicine/Sports Medicine
+  folder: Medicine/Sports Medicine
+
+# Nested subcollection, mirrored as-is
+# -> /<FOLDER_NAME>/Sciences/Atmospheric Sciences/Meteorology
+- collection: Sciences/Atmospheric Sciences/Meteorology
+  folder: Sciences/Atmospheric Sciences/Meteorology
+
+# `folder` omitted, so it mirrors the collection path
+# -> /<FOLDER_NAME>/Sciences/Physics
+- collection: Sciences/Physics

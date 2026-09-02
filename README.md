@@ -25,6 +25,7 @@ A small state file (`.rm_sync_state.json`, stored in `STORAGE_BASE_PATH`) is use
 - pydash
 - python-dotenv
 - requests
+- pyyaml
 
 ### Env file
 - Create a zotero api key
@@ -33,6 +34,21 @@ A small state file (`.rm_sync_state.json`, stored in `STORAGE_BASE_PATH`) is use
 - set `STORAGE_BASE_PATH` to a local folder used to hold PDFs downloaded from/to WebDAV and the sync state file (must persist between runs)
 - set `WEBDAV_URL`, `WEBDAV_USERNAME`, and `WEBDAV_PASSWORD` to match your Zotero WebDAV storage settings (found in Zotero preferences under Sync > File Syncing)
 - optionally set `RMAPI_HOST` if you run your own rmfakecloud (or other self-hosted) instance instead of the official Remarkable cloud
+
+### Mapping collections to folders
+By default (`COLLECTION_NAME` + `FOLDER_NAME` only) a single Zotero collection is synced to a single folder on the Remarkable.
+
+For more control — including syncing multiple collections, or nested Zotero subcollections — copy [sync_map.example.yaml](sync_map.example.yaml) to `sync_map.yaml` (or point `SYNC_MAP_PATH` at another file) and list your mappings:
+
+```yaml
+- collection: Mathematics
+  folder: Mathematics
+
+- collection: Sciences/Atmospheric Sciences/Meteorology
+  folder: Sciences/Atmospheric Sciences/Meteorology
+```
+
+`collection` is the path to a Zotero collection, using `/` to descend into nested subcollections (any depth). `folder` is the destination path on the Remarkable, nested under `FOLDER_NAME`; it defaults to the same path as `collection` if omitted. Remarkable folders are created automatically if they don't already exist. When `sync_map.yaml` is present, `COLLECTION_NAME`/`FOLDER_NAME` alone are only used as the base folder name.
 
 ### Usage
 _(ensure you have a .env file, with zotero api key, and rmapi setup)_  
