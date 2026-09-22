@@ -66,7 +66,7 @@ def getPapersFromZoteroCollection(zotero, collection_id):
             raw_title = titles_by_key.get(parent_key) or data.get('title')
             item_title = raw_title[:-4] if raw_title and raw_title.lower().endswith('.pdf') else raw_title
             if (item_key and item_filename and item_title):
-                papers.append({ 'title': item_title, 'key': item_key, 'filename': item_filename })
+                papers.append({ 'title': item_title, 'key': item_key, 'filename': item_filename, 'md5': data.get('md5') })
     return papers
 
 # Zotero's WebDAV file sync always stores attachments under a 'zotero' subfolder of the configured WebDAV URL
@@ -123,6 +123,7 @@ def uploadPaperToWebDAV(zotero, item_key, filename, local_path, webdav_url, webd
     # the API returns read-only fields (e.g. lastRead) that it then rejects if sent back on write
     item['data'].pop('lastRead', None)
     zotero.update_item(item)
+    return md5_hash
 
 def loadSyncState(path):
     if os.path.exists(path):
@@ -171,14 +172,51 @@ def syncChangedPapersToZotero(zotero, papers, download_dir, state, folder_path, 
         try:
             print(COMMAND)
             subprocess.check_call(COMMAND, shell=True, cwd=download_dir)
-            uploadPaperToWebDAV(zotero, paper.get('key'), paper.get('filename'), dest_path, webdav_url, webdav_username, webdav_password)
+            md5_hash = uploadPaperToWebDAV(zotero, paper.get('key'), paper.get('filename'), dest_path, webdav_url, webdav_username, webdav_password)
             state[f"{folder_path}::{title}"] = paper.get('fingerprint')
+            state[f"{folder_path}::{title}::zotero_md5"] = md5_hash
             print(f'uploaded changes to {title} back to Zotero')
         except Exception as e:
             print(f'Failed to sync {title} back to Zotero: {e}')
         finally:
             if os.path.exists(dest_path):
                 os.remove(dest_path)
+
+def getPapersChangedInZotero(papers, remarkable_files, state, folder_path, skip_titles):
+    changed = []
+    for paper in papers:
+        title = paper.get('title')
+        if title not in remarkable_files or title in skip_titles:
+            continue
+        md5 = paper.get('md5')
+        if md5 is None:
+            continue
+        state_key = f"{folder_path}::{title}::zotero_md5"
+        # no prior state means this is the first time we've seen the file; assume it's already in sync
+        if state_key in state and state[state_key] != md5:
+            changed.append(paper)
+        else:
+            state[state_key] = md5
+    return changed
+
+def syncChangedPapersToRemarkable(papers, download_dir, folder_path, state, webdav_url, webdav_username, webdav_password):
+    print(f'syncing {len(papers)} papers changed in Zotero back to Remarkable')
+    for paper in papers:
+        title = paper.get('title')
+        path = None
+        try:
+            path = downloadPaperFromWebDAV(paper, download_dir, webdav_url, webdav_username, webdav_password)
+            COMMAND = f"rmapi put --content-only \"{path}\" \"/{folder_path}\""
+            print(COMMAND)
+            subprocess.check_call(COMMAND, shell=True)
+            state[f"{folder_path}::{title}::zotero_md5"] = paper.get('md5')
+            state[f"{folder_path}::{title}"] = getRemarkableFileFingerprint(title, folder_path)
+            print(f'pushed changes to {title} to Remarkable')
+        except Exception as e:
+            print(f'Failed to push {title} to Remarkable: {e}')
+        finally:
+            if path and os.path.exists(path):
+                os.remove(path)
 
 def getPapersFromRemarkable(folder_path):
     COMMAND = f"rmapi ls \"/{folder_path}\""
@@ -260,6 +298,13 @@ def syncCollection(zotero, mapping, base_folder_name, storage_base_path, sync_st
         print(f"paper changed on Remarkable: {paper.get('title')}")
     syncChangedPapersToZotero(zotero, changed_papers, storage_base_path, sync_state, folder_path, webdav_url, webdav_username, webdav_password)
 
+    # then push down any papers whose content changed directly in Zotero (e.g. annotations added there)
+    changed_titles = { p.get('title') for p in changed_papers }
+    zotero_changed_papers = getPapersChangedInZotero(papers, remarkable_files, sync_state, folder_path, changed_titles)
+    for paper in zotero_changed_papers:
+        print(f"paper changed in Zotero: {paper.get('title')}")
+    syncChangedPapersToRemarkable(zotero_changed_papers, storage_base_path, folder_path, sync_state, webdav_url, webdav_username, webdav_password)
+
     # then bring anything new from Zotero down to the Remarkable
     upload_list = getUploadListOfPapers(remarkable_files, papers)
     downloadPapers(upload_list, storage_base_path, webdav_url, webdav_username, webdav_password)
@@ -270,11 +315,13 @@ def syncCollection(zotero, mapping, base_folder_name, storage_base_path, sync_st
     uploadPapers(upload_list, folder_path)
     for paper in upload_list:
         sync_state[f"{folder_path}::{paper.get('title')}"] = getRemarkableFileFingerprint(paper.get('title'), folder_path)
+        sync_state[f"{folder_path}::{paper.get('title')}::zotero_md5"] = paper.get('md5')
 
     delete_list = getDeleteListOfPapers(remarkable_files, papers)
     deletePapers(delete_list, folder_path)
     for title in delete_list:
         sync_state.pop(f"{folder_path}::{title}", None)
+        sync_state.pop(f"{folder_path}::{title}::zotero_md5", None)
 
 def main() -> None:
     load_dotenv()
